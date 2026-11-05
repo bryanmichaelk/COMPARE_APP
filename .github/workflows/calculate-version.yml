@@ -1,0 +1,70 @@
+name: Calculate Version
+
+on:
+  workflow_call:
+    outputs:
+      tag:
+        description: Next semantic version tag; empty when no release is needed.
+        value: ${{ jobs.calculate.outputs.tag }}
+
+permissions:
+  contents: read
+
+jobs:
+  calculate:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Calculate and check version
+        id: version
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { appendFileSync } from 'node:fs';
+
+          function nextTag(previous, subjects, messages) {
+            const version = previous ? previous.slice(1).split('.').map(Number) : [0, 0, 0];
+            if (/^[a-z]+(?:\([^)]*\))?!:|^BREAKING CHANGE:/im.test(messages)) {
+              version[0] += 1;
+              version[1] = version[2] = 0;
+            } else if (/^feat(?:\/|\([^)]*\):|:)/im.test(subjects)) {
+              version[1] += 1;
+              version[2] = 0;
+            } else if (/^(?:fix|hotfix)(?:\/|\([^)]*\):|:)/im.test(subjects)) {
+              version[2] += 1;
+            } else {
+              return '';
+            }
+            return `v${version.join('.')}`;
+          }
+
+          assert.equal(nextTag('', 'feat: initial', ''), 'v0.1.0');
+          assert.equal(nextTag('v1.2.3', 'feat(ui): compare', ''), 'v1.3.0');
+          assert.equal(nextTag('v1.2.3', 'fix: bug', ''), 'v1.2.4');
+          assert.equal(nextTag('v1.2.3', 'hotfix/security', ''), 'v1.2.4');
+          assert.equal(nextTag('v1.2.3', 'feat: ui\nfix: bug', ''), 'v1.3.0');
+          assert.equal(nextTag('v1.2.3', 'fix: bug', 'feat!: incompatible'), 'v2.0.0');
+          assert.equal(nextTag('v1.2.3', '', 'BREAKING CHANGE: incompatible'), 'v2.0.0');
+          assert.equal(nextTag('v1.2.3', 'docs: update\ncleanup: tidy', ''), '');
+
+          const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
+          const tags = git('tag', '--merged', 'HEAD', '--list', 'v*', '--sort=-v:refname')
+            .split('\n').filter(tag => /^v\d+\.\d+\.\d+$/.test(tag));
+          const previous = tags[0] || '';
+          const range = previous ? `${previous}..HEAD` : 'HEAD';
+          const tag = nextTag(previous,
+            git('log', '--no-merges', '--format=%s', range),
+            git('log', '--no-merges', '--format=%B', range));
+          if (tag && git('tag', '--list', tag)) throw new Error(`Version tag already exists: ${tag}`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `tag=${tag}\n`);
+          console.log(tag ? `Next version: ${tag}` : 'No release-worthy commits; publishing skipped.');
+          NODE

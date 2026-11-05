@@ -1,0 +1,6 @@
+services:
+  json-compare:
+    image: ghcr.io/${GHCR_OWNER:?Set lowercase GHCR_OWNER}/compare-app:${IMAGE_TAG:?Set IMAGE_TAG to published version}
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8080}:80"
